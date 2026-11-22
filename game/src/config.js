@@ -1,20 +1,24 @@
-// Every tuning number, colour and room layout for Slime Heist in one place.
-// The playfield is a fixed 1280x720 logical area seen from above; the renderer
-// scales it to the window, so no rule below depends on the screen size.
+// Slime Heist — all of the numbers in one place.
+//
+// The museum is drawn on a fixed 1280×720 logical canvas (top-down). The
+// renderer stretches that canvas to the window, so nothing in this file
+// knows or cares how big the real screen is.
 
 export const FIELD = { width: 1280, height: 720, wall: 24 };
 
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
+// The world ticks 60 times a second no matter how fast the display runs.
 export const STEP = 1 / 60;
 
+// The thief: a pink slime. Holding Shift makes it slower but harder to spot.
 export const PLAYER = {
   radius: 15,
   speed: 222,
   sneakSpeed: 116,
-  /** Seconds standing at the gem pedestal to pocket the loot. */
-  grabSeconds: 0.8,
+  grabSeconds: 0.8, // time spent standing at the pedestal to pocket the gem
 };
 
+// Guard slimes patrol between waypoints with a flashlight cone. At each
+// waypoint they pause and sweep the beam left and right.
 export const GUARD = {
   radius: 15,
   viewRange: 278,
@@ -23,45 +27,39 @@ export const GUARD = {
   pauseSeconds: 1.25,
   sweepAngle: (44 * Math.PI) / 180,
   sweepRate: 0.95,
-  /** Seconds a guard spends staring at a decoy coin's landing spot. */
-  investigateSeconds: 3.2,
+  investigateSeconds: 3.2, // how long a guard stares at a decoy coin
 };
 
+// Cameras never move; they just sweep their cone around a fixed heading.
 export const CAMERA = {
   viewRange: 250,
   viewHalfAngle: (30 * Math.PI) / 180,
-  /** Cameras sweep back and forth around their base angle. */
   sweepAngle: (52 * Math.PI) / 180,
   sweepRate: 0.55,
 };
 
+// The alarm meter: how fast it fills when seen, how fast it drains unseen.
 export const ALARM = {
-  /** Meter gained per second at point blank in a guard's beam. */
-  guardFillRate: 1.08,
-  /** Meter gained per second inside a camera's cone (cameras are slower to confirm). */
-  cameraFillRate: 0.62,
-  /** Sneaking multiplies either fill rate by this. */
-  sneakFactor: 0.42,
-  /** Meter lost per second while nothing can see the thief. */
-  decayRate: 0.58,
-  /** At this meter a guard stops patrolling and turns toward the thief. */
-  suspiciousAt: 0.3,
-  /** A room counts as "spotted" (no ghost bonus) once the meter passes this. */
-  spottedAt: 0.25,
+  guardFillRate: 1.08, // per second at point-blank range in a flashlight beam
+  cameraFillRate: 0.62, // cameras confirm more slowly than guards do
+  sneakFactor: 0.42, // sneaking multiplies either fill rate by this
+  decayRate: 0.58, // per second while nobody can see the thief
+  suspiciousAt: 0.3, // past this, a guard turns toward the thief
+  spottedAt: 0.25, // past this, the room no longer earns the ghost bonus
 };
 
+// Pocket tools. Each room refills them; each use shaves points off the score.
 export const TOOLS = {
-  /** Decoy coins per room; each use costs score. Guards turn to the noise. */
   decoysPerRoom: 3,
   decoyCost: 50,
   decoyRange: 340,
-  /** Smoke puffs per room; each use costs score. Smoke blocks sight lines. */
   smokesPerRoom: 2,
   smokeCost: 75,
   smokeSeconds: 4.2,
   smokeRadius: 62,
 };
 
+// Room scoring: a base that ticks down with time, plus a bonus for staying unseen.
 export const SCORE = {
   roomBase: 1000,
   perSecond: 5,
@@ -78,15 +76,15 @@ export const PALETTE = {
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 
-/** Where the best total score is kept between visits (this browser only). */
+// localStorage slot for the best total score (this browser only).
 export const BEST_KEY = 'slime-heist.best';
 
-// Room layouts. Coordinates are logical pixels in the 1280x720 field; the
-// border wall (FIELD.wall thick) is added by the world, so layouts only list
-// the inner cover. kind 'wall' is a solid block, kind 'case' a glass display
-// case, kind 'crate' a stack of crates; all stop movement and sight, so each
-// room keeps two or three routes around the patrols. Guard patrols are
-// waypoint loops; cameras are fixed mounts with a base facing angle.
+// The three rooms. All coordinates are logical pixels on the 1280×720 field.
+// The border wall is added by the world, so each layout only lists inner
+// cover: 'wall' blocks, glass 'case' exhibits, wooden 'crate' stacks. Every
+// kind blocks both walking and sight, and every room keeps at least two
+// ways around the patrols. Guards walk their waypoint loop; cameras sit at
+// fixed mounts facing a base angle.
 export const LEVELS = [
   {
     name: 'Gallery Wing',
@@ -107,9 +105,7 @@ export const LEVELS = [
       { speed: 74, waypoints: [{ x: 370, y: 160 }, { x: 370, y: 555 }] },
       { speed: 84, waypoints: [{ x: 1045, y: 600 }, { x: 1045, y: 140 }] },
     ],
-    cameras: [
-      { x: 1000, y: 44, angle: Math.PI / 2 },
-    ],
+    cameras: [{ x: 1000, y: 44, angle: Math.PI / 2 }],
   },
   {
     name: 'Vault Corridor',

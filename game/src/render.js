@@ -1,13 +1,13 @@
-// Drawing only: the world's state and the current screen in, pixels out. The
-// 1280x720 playfield is scaled to fit the window and centred, the margin
-// filled with the backdrop colour. Anime cel-shaded art, all drawn with
-// canvas paths (no flat colour blocks): the thief is a pink slime in a
-// bandit mask with a loot bag, guards are indigo slimes in caps carrying
-// flashlights, cameras are wall CCTV units with sweeping cones, the floor
-// is veined museum marble, walls are brick, cover is glass display cases
-// and planked crates, and the loot is a faceted gem on a pedestal. Vision
-// cones are light beams (radial gradient, clipped by cover with raycasts)
-// so what the player sees is what the watchers can see.
+// Slime Heist renderer: game state in, pixels out. Nothing here decides
+// anything about the rules — it only paints what the world already computed.
+//
+// The picture is an anime museum at night, drawn entirely with canvas
+// shapes: veined marble tiles, brick walls, glass exhibit cases, wooden
+// crates, a glowing getaway door, and soft slime characters — a pink thief
+// in a bandit mask, indigo guards with caps and flashlights. Watcher vision
+// is drawn as an actual light beam (gradient fan, cut off where cover
+// blocks it), so the player sees exactly the ground that is dangerous.
+
 import { CAMERA, FIELD, FONT, GUARD, PALETTE, TOOLS } from './config.js';
 
 export const SCREEN_TITLE = 'title';
@@ -16,259 +16,219 @@ export const SCREEN_PAUSED = 'paused';
 export const SCREEN_CAUGHT = 'caught';
 export const SCREEN_WIN = 'win';
 
-/** The panel's width; its height grows with its lines. */
-const PANEL = { width: 700, top: 150, line: 34, bottom: 78 };
-const CONE_RAYS = 30;
+// Colours for the night-museum palette. Beam colours are open-ended rgba
+// prefixes so an alpha can be appended per gradient stop.
+const INK = '#241f3d';
+const FLOOR_TONES = ['#4a5578', '#414d6e'];
+const GROUT = '#2c3552';
+const VEIN = 'rgba(190, 205, 255, 0.16)';
+const TILE_LIGHT = 'rgba(205, 220, 255, 0.12)';
+const ROPE = 'rgba(255, 125, 156, 0.35)';
+const BRICK = { top: '#8595bd', mid: '#5d6d99', low: '#46537a', line: '#39466b' };
+const WOOD = { light: '#c99a63', mid: '#b0824f', dark: '#8a6136', grain: 'rgba(111, 76, 39, 0.55)' };
+const CASE = { baseTop: '#6b4a8a', baseLow: '#4e3466', glass: 'rgba(160, 220, 255, 0.30)', shine: 'rgba(255, 255, 255, 0.45)' };
+const THIEF = { body: '#ff9ec4', shade: '#f06fa8', edge: '#c94f86', mask: '#2b2440', bag: '#8a6136' };
+const GUARD_ART = { body: '#7a6fd0', shade: '#57499f', edge: '#41357c', cap: '#2e3a67', brim: '#232c50' };
+const GOLD = '#f2c94c';
+const EYE = '#2b2440';
+const BLUSH = 'rgba(255, 130, 160, 0.55)';
+const GEM = { hi: '#d8fff4', mid: '#5ef2d6', low: '#25b79a' };
+const EXIT_GREEN = '#4fe3a5';
+const PANEL = { top: '#3a4470', low: '#252c4d', edge: '#8fa3d9' };
+const HUD = { fill: 'rgba(24, 28, 52, 0.72)', edge: 'rgba(160, 180, 235, 0.45)' };
+const BEAM = { lamp: 'rgba(255, 226, 140, ', lampHot: 'rgba(255, 110, 100, ', cam: 'rgba(140, 210, 255, ', camHot: 'rgba(255, 110, 100, ' };
+const SHADOW = 'rgba(12, 14, 32, 0.35)';
+
 const TILE = 80;
+const RAYS = 30;
+const TAU = Math.PI * 2;
 
-const ART = {
-  outline: '#241f3d',
-  marbleA: '#4a5578',
-  marbleB: '#414d6e',
-  marbleGrout: '#2c3552',
-  marbleHi: 'rgba(205, 220, 255, 0.12)',
-  vein: 'rgba(190, 205, 255, 0.16)',
-  stain: 'rgba(14, 18, 38, 0.20)',
-  rope: 'rgba(255, 125, 156, 0.35)',
-  brick: '#5d6d99',
-  brickDark: '#46537a',
-  brickTop: '#8595bd',
-  brickLine: '#39466b',
-  wood: '#b0824f',
-  woodDark: '#8a6136',
-  woodLight: '#c99a63',
-  glass: 'rgba(160, 220, 255, 0.30)',
-  glassHi: 'rgba(255, 255, 255, 0.45)',
-  caseBase: '#6b4a8a',
-  caseBaseDark: '#4e3466',
-  thiefBody: '#ff9ec4',
-  thiefShade: '#f06fa8',
-  thiefDeep: '#c94f86',
-  mask: '#2b2440',
-  bag: '#8a6136',
-  guardBody: '#7a6fd0',
-  guardShade: '#57499f',
-  guardDeep: '#41357c',
-  cap: '#2e3a67',
-  capBrim: '#232c50',
-  gold: '#f2c94c',
-  eye: '#2b2440',
-  blush: 'rgba(255, 130, 160, 0.55)',
-  gem: '#5ef2d6',
-  gemDark: '#25b79a',
-  gemHi: '#d8fff4',
-  exitGlow: '#4fe3a5',
-  panelTop: '#3a4470',
-  panelBottom: '#252c4d',
-  panelEdge: '#8fa3d9',
-  hudBack: 'rgba(24, 28, 52, 0.72)',
-  hudEdge: 'rgba(160, 180, 235, 0.45)',
-  beam: 'rgba(255, 226, 140, ',
-  beamAlert: 'rgba(255, 110, 100, ',
-  camBeam: 'rgba(140, 210, 255, ',
-  camBeamAlert: 'rgba(255, 110, 100, ',
-};
-
-function cachedLabel(prefix) {
-  let value = null;
-  let text = '';
-  return function label(next) {
-    if (next !== value) {
-      value = next;
-      text = prefix + next;
-    }
-    return text;
-  };
-}
-
-/** Deterministic 0..1 hash from two integers, for stable texture variation. */
-function hash2(x, y) {
-  let h = (x * 374761393 + y * 668265263) ^ 0x5bf03635;
+// Stable pseudo-random in [0,1) from two integers — textures must not
+// shimmer between frames, so nothing here uses Math.random.
+function scramble(a, b) {
+  let h = Math.imul(a + 1, 374761393) ^ Math.imul(b + 1, 668265263) ^ 0x5bf03635;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-/** Distance along a ray from (x, y) in direction (dx, dy) to a rectangle, or Infinity. */
-function rayRect(x, y, dx, dy, rect) {
-  let tMin = 0;
-  let tMax = Infinity;
-  if (Math.abs(dx) < 1e-9) {
-    if (x < rect.x || x > rect.x + rect.width) return Infinity;
-  } else {
-    let t1 = (rect.x - x) / dx;
-    let t2 = (rect.x + rect.width - x) / dx;
-    if (t1 > t2) [t1, t2] = [t2, t1];
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
+// How far a ray from (x,y) along (dx,dy) travels before entering `rect`
+// (Infinity when it misses). Used to clip light beams at cover.
+function rayHit(x, y, dx, dy, rect) {
+  let near = 0;
+  let far = Infinity;
+  const slabs = [
+    [x, dx, rect.x, rect.x + rect.width],
+    [y, dy, rect.y, rect.y + rect.height],
+  ];
+  for (const [origin, dir, lo, hi] of slabs) {
+    if (Math.abs(dir) < 1e-9) {
+      if (origin < lo || origin > hi) return Infinity;
+    } else {
+      let t0 = (lo - origin) / dir;
+      let t1 = (hi - origin) / dir;
+      if (t0 > t1) [t0, t1] = [t1, t0];
+      near = Math.max(near, t0);
+      far = Math.min(far, t1);
+    }
   }
-  if (Math.abs(dy) < 1e-9) {
-    if (y < rect.y || y > rect.y + rect.height) return Infinity;
-  } else {
-    let t1 = (rect.y - y) / dy;
-    let t2 = (rect.y + rect.height - y) / dy;
-    if (t1 > t2) [t1, t2] = [t2, t1];
-    tMin = Math.max(tMin, t1);
-    tMax = Math.min(tMax, t2);
-  }
-  return tMax >= tMin ? tMin : Infinity;
+  return far >= near ? near : Infinity;
 }
 
 export function createRenderer(canvas) {
-  const context = canvas.getContext('2d');
-  const view = { scale: 1, x: 0, y: 0 };
-  const scoreLabel = cachedLabel('Score ');
-  const finalLabel = cachedLabel('Score ');
-  const bestLabel = cachedLabel('Best ');
-  const motion = new WeakMap();
-  let floorCanvas = null;
-  let vignette = null;
+  const ctx = canvas.getContext('2d');
+  const view = { scale: 1, ox: 0, oy: 0 };
+  const wiggle = new WeakMap(); // per-slime bounce bookkeeping
+  let floor = null;
+  let shade = null; // vignette gradient, built once
 
-  function resize() {
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.round(window.innerWidth * ratio);
-    const height = Math.round(window.innerHeight * ratio);
-    canvas.width = width;
-    canvas.height = height;
-    view.scale = Math.min(width / FIELD.width, height / FIELD.height);
-    view.x = (width - FIELD.width * view.scale) / 2;
-    view.y = (height - FIELD.height * view.scale) / 2;
+  // ---- sizing -----------------------------------------------------------
+  function fit() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(window.innerWidth * dpr);
+    canvas.height = Math.round(window.innerHeight * dpr);
+    view.scale = Math.min(canvas.width / FIELD.width, canvas.height / FIELD.height);
+    view.ox = (canvas.width - FIELD.width * view.scale) / 2;
+    view.oy = (canvas.height - FIELD.height * view.scale) / 2;
   }
 
-  /** A mouse position in client pixels, in logical playfield coordinates. */
   function toLogical(clientX, clientY) {
-    const rect = canvas.getBoundingClientRect();
-    const px = ((clientX - rect.left) / rect.width) * canvas.width;
-    const py = ((clientY - rect.top) / rect.height) * canvas.height;
-    return { x: (px - view.x) / view.scale, y: (py - view.y) / view.scale };
+    const box = canvas.getBoundingClientRect();
+    const px = ((clientX - box.left) / box.width) * canvas.width;
+    const py = ((clientY - box.top) / box.height) * canvas.height;
+    return { x: (px - view.ox) / view.scale, y: (py - view.oy) / view.scale };
   }
 
-  const fonts = new Map();
-  function setFont(size, weight) {
-    const key = `${weight || ''}:${size}`;
-    if (!fonts.has(key)) fonts.set(key, `${weight ? `${weight} ` : ''}${size}px ${FONT}`);
-    context.font = fonts.get(key);
+  // ---- tiny drawing helpers ---------------------------------------------
+  function font(px, bold) {
+    ctx.font = `${bold ? 'bold ' : ''}${px}px ${FONT}`;
   }
 
-  function text(value, x, y, size, color, align, weight) {
-    setFont(size, weight);
-    context.fillStyle = color;
-    context.textAlign = align;
-    context.fillText(value, x, y);
+  function label(str, x, y, px, colour, align = 'left', bold = false) {
+    font(px, bold);
+    ctx.fillStyle = colour;
+    ctx.textAlign = align;
+    ctx.fillText(str, x, y);
   }
 
-  function outlineText(value, x, y, size, color, align, weight) {
-    setFont(size, weight);
-    context.textAlign = align;
-    context.lineJoin = 'round';
-    context.strokeStyle = ART.outline;
-    context.lineWidth = Math.max(3, size / 7);
-    context.strokeText(value, x, y);
-    context.fillStyle = color;
-    context.fillText(value, x, y);
+  function bigLabel(str, x, y, px, colour, align = 'center') {
+    font(px, true);
+    ctx.textAlign = align;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = Math.max(3, px / 7);
+    ctx.strokeText(str, x, y);
+    ctx.fillStyle = colour;
+    ctx.fillText(str, x, y);
   }
 
-  function roundRectPath(x, y, w, h, r) {
+  function rounded(x, y, w, h, r) {
     const rr = Math.min(r, w / 2, h / 2);
-    context.beginPath();
-    context.moveTo(x + rr, y);
-    context.lineTo(x + w - rr, y);
-    context.arcTo(x + w, y, x + w, y + rr, rr);
-    context.lineTo(x + w, y + h - rr);
-    context.arcTo(x + w, y + h, x + w - rr, y + h, rr);
-    context.lineTo(x + rr, y + h);
-    context.arcTo(x, y + h, x, y + h - rr, rr);
-    context.lineTo(x, y + rr);
-    context.arcTo(x, y, x + rr, y, rr);
-    context.closePath();
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
   }
 
-  /** Walk-cycle phase and squash for an entity, tracked between frames. */
-  function motionOf(entity, totalTime) {
-    let m = motion.get(entity);
+  function ellipse(x, y, rx, ry, rot = 0) {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, rot, 0, TAU);
+  }
+
+  // Squash-and-stretch state for a slime: it bounces while moving and
+  // breathes gently while still. Keyed by the entity object itself.
+  function bounceOf(entity, now) {
+    let m = wiggle.get(entity);
     if (!m) {
-      m = { x: entity.x, y: entity.y, phase: 0, moving: false };
-      motion.set(entity, m);
+      m = { px: entity.x, py: entity.y, phase: 0 };
+      wiggle.set(entity, m);
     }
-    const dx = entity.x - m.x;
-    const dy = entity.y - m.y;
-    const dist = Math.hypot(dx, dy);
-    m.moving = dist > 0.05;
-    if (m.moving) m.phase += dist * 0.32;
-    m.x = entity.x;
-    m.y = entity.y;
-    const bob = m.moving ? Math.sin(m.phase) * 0.09 : Math.sin(totalTime * 2.4 + entity.x * 0.02) * 0.035;
-    return { phase: m.phase, moving: m.moving, squash: bob };
+    const travelled = Math.hypot(entity.x - m.px, entity.y - m.py);
+    m.px = entity.x;
+    m.py = entity.y;
+    if (travelled > 0.05) m.phase += travelled * 0.32;
+    const moving = travelled > 0.05;
+    const squash = moving
+      ? Math.sin(m.phase) * 0.09
+      : Math.sin(now * 2.4 + entity.x * 0.02) * 0.035;
+    return squash;
   }
 
-  // ---- Floor (pre-rendered once): cel-shaded marble tiles, veins, stains. ----
-  function buildFloor() {
-    floorCanvas = document.createElement('canvas');
-    floorCanvas.width = FIELD.width;
-    floorCanvas.height = FIELD.height;
-    const g = floorCanvas.getContext('2d');
-    g.fillStyle = ART.marbleA;
+  // ---- the floor, painted once onto its own canvas ----------------------
+  function paintFloor() {
+    floor = document.createElement('canvas');
+    floor.width = FIELD.width;
+    floor.height = FIELD.height;
+    const g = floor.getContext('2d');
+    g.fillStyle = FLOOR_TONES[0];
     g.fillRect(0, 0, FIELD.width, FIELD.height);
+
     for (let ty = 0; ty * TILE < FIELD.height; ty += 1) {
       for (let tx = 0; tx * TILE < FIELD.width; tx += 1) {
         const x = tx * TILE;
         const y = ty * TILE;
-        const v = hash2(tx, ty);
-        // Checkerboard marble with per-tile tone variation.
-        g.fillStyle = (tx + ty) % 2 === 0 ? ART.marbleA : ART.marbleB;
+        g.fillStyle = FLOOR_TONES[(tx + ty) % 2];
         g.fillRect(x, y, TILE, TILE);
-        if (v > 0.7) {
+        if (scramble(tx, ty) > 0.7) {
           g.fillStyle = 'rgba(255, 255, 255, 0.05)';
           g.fillRect(x, y, TILE, TILE);
         }
-        // Cel highlight along the top and left edge of each tile.
-        g.fillStyle = ART.marbleHi;
+        // a cel-shaded glint along the top and left edges
+        g.fillStyle = TILE_LIGHT;
         g.fillRect(x, y, TILE, 4);
         g.fillRect(x, y, 4, TILE);
-        // Marble veins: two wavy strokes per tile.
-        g.strokeStyle = ART.vein;
+        // two wandering marble veins
+        g.strokeStyle = VEIN;
         g.lineWidth = 2;
-        for (let vein = 0; vein < 2; vein += 1) {
-          const vy = y + 14 + hash2(tx * 3 + vein, ty * 7) * (TILE - 28);
+        for (let v = 0; v < 2; v += 1) {
+          const vy = y + 14 + scramble(tx * 3 + v, ty * 7) * (TILE - 28);
           g.beginPath();
           g.moveTo(x + 4, vy);
           g.bezierCurveTo(
-            x + TILE * 0.35, vy - 6 + hash2(tx, ty + vein) * 12,
-            x + TILE * 0.65, vy + 6 - hash2(tx + vein, ty) * 12,
-            x + TILE - 4, vy + (hash2(tx * 9, ty * 5 + vein) - 0.5) * 14,
+            x + TILE * 0.35, vy - 6 + scramble(tx, ty + v) * 12,
+            x + TILE * 0.65, vy + 6 - scramble(tx + v, ty) * 12,
+            x + TILE - 4, vy + (scramble(tx * 9, ty * 5 + v) - 0.5) * 14,
           );
           g.stroke();
         }
-        // Speckles.
+        // stone speckles
         g.fillStyle = 'rgba(20, 26, 48, 0.25)';
         for (let s = 0; s < 4; s += 1) {
-          const sx = x + hash2(tx * 7 + s, ty * 3) * (TILE - 6) + 3;
-          const sy = y + hash2(tx * 5, ty * 11 + s) * (TILE - 6) + 3;
-          g.fillRect(sx, sy, 3, 2);
+          g.fillRect(
+            x + 3 + scramble(tx * 7 + s, ty * 3) * (TILE - 6),
+            y + 3 + scramble(tx * 5, ty * 11 + s) * (TILE - 6),
+            3, 2,
+          );
         }
       }
     }
-    // Grout lines.
-    g.strokeStyle = ART.marbleGrout;
+
+    // grout between the tiles
+    g.strokeStyle = GROUT;
     g.lineWidth = 3;
     g.beginPath();
     for (let x = 0; x <= FIELD.width; x += TILE) { g.moveTo(x, 0); g.lineTo(x, FIELD.height); }
     for (let y = 0; y <= FIELD.height; y += TILE) { g.moveTo(0, y); g.lineTo(FIELD.width, y); }
     g.stroke();
-    // Stains: soft dark blobs.
+
+    // worn patches
     for (let i = 0; i < 12; i += 1) {
-      const sx = hash2(i, 31) * FIELD.width;
-      const sy = hash2(17, i) * FIELD.height;
-      const r = 30 + hash2(i, 7) * 70;
+      const sx = scramble(i, 31) * FIELD.width;
+      const sy = scramble(17, i) * FIELD.height;
+      const r = 30 + scramble(i, 7) * 70;
       const grad = g.createRadialGradient(sx, sy, 4, sx, sy, r);
-      grad.addColorStop(0, ART.stain);
+      grad.addColorStop(0, 'rgba(14, 18, 38, 0.20)');
       grad.addColorStop(1, 'rgba(14, 18, 38, 0)');
       g.fillStyle = grad;
       g.beginPath();
-      g.arc(sx, sy, r, 0, Math.PI * 2);
+      g.arc(sx, sy, r, 0, TAU);
       g.fill();
     }
-    // Museum rope-line paint across the middle.
-    g.strokeStyle = ART.rope;
+
+    // the velvet-rope line painted across the gallery
+    g.strokeStyle = ROPE;
     g.lineWidth = 5;
     g.setLineDash([26, 20]);
     g.beginPath();
@@ -278,864 +238,849 @@ export function createRenderer(canvas) {
     g.setLineDash([]);
   }
 
-  function buildVignette() {
-    vignette = context.createRadialGradient(
-      FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.42,
-      FIELD.width / 2, FIELD.height / 2, FIELD.width * 0.72,
-    );
-    vignette.addColorStop(0, 'rgba(10, 10, 30, 0)');
-    vignette.addColorStop(1, 'rgba(10, 10, 30, 0.38)');
+  function vignette() {
+    if (!shade) {
+      shade = ctx.createRadialGradient(
+        FIELD.width / 2, FIELD.height / 2, FIELD.height * 0.42,
+        FIELD.width / 2, FIELD.height / 2, FIELD.width * 0.72,
+      );
+      shade.addColorStop(0, 'rgba(10, 10, 30, 0)');
+      shade.addColorStop(1, 'rgba(10, 10, 30, 0.38)');
+    }
+    return shade;
   }
 
-  // ---- Vision cones as light beams, clipped by cover. ----
-  function beamPoints(state, ox, oy, angle, halfAngle, range) {
-    const points = [];
-    for (let index = 0; index <= CONE_RAYS; index += 1) {
-      const a = angle - halfAngle + (2 * halfAngle * index) / CONE_RAYS;
+  // ---- light beams --------------------------------------------------------
+  // A fan of rays from the watcher, each stopped by the first cover it hits.
+  function fanPoints(state, ox, oy, heading, half, range) {
+    const pts = [];
+    for (let i = 0; i <= RAYS; i += 1) {
+      const a = heading - half + (2 * half * i) / RAYS;
       const dx = Math.cos(a);
       const dy = Math.sin(a);
-      let dist = range;
+      let reach = range;
       for (const rect of state.cover) {
-        const hit = rayRect(ox, oy, dx, dy, rect);
-        if (hit < dist) dist = hit;
+        const hit = rayHit(ox, oy, dx, dy, rect);
+        if (hit < reach) reach = hit;
       }
-      points.push([ox + dx * dist, oy + dy * dist]);
+      pts.push([ox + dx * reach, oy + dy * reach]);
     }
-    return points;
+    return pts;
   }
 
-  function drawBeam(state, ox, oy, angle, halfAngle, range, base) {
-    const points = beamPoints(state, ox, oy, angle, halfAngle, range);
-    const beamPath = (scale) => {
-      context.beginPath();
-      context.moveTo(ox, oy);
-      for (const [px, py] of points) {
-        context.lineTo(ox + (px - ox) * scale, oy + (py - oy) * scale);
-      }
-      context.closePath();
+  function beam(state, ox, oy, heading, half, range, tint) {
+    const pts = fanPoints(state, ox, oy, heading, half, range);
+    const trace = (shrink) => {
+      ctx.beginPath();
+      ctx.moveTo(ox, oy);
+      for (const [px, py] of pts) ctx.lineTo(ox + (px - ox) * shrink, oy + (py - oy) * shrink);
+      ctx.closePath();
     };
-    // Outer soft beam.
-    beamPath(1);
-    let grad = context.createRadialGradient(ox, oy, 6, ox, oy, range);
-    grad.addColorStop(0, `${base}0.50)`);
-    grad.addColorStop(0.55, `${base}0.26)`);
-    grad.addColorStop(1, `${base}0.02)`);
-    context.fillStyle = grad;
-    context.fill();
-    // Brighter core near the lamp.
-    beamPath(0.55);
-    grad = context.createRadialGradient(ox, oy, 4, ox, oy, range * 0.55);
-    grad.addColorStop(0, `${base}0.55)`);
-    grad.addColorStop(1, `${base}0.05)`);
-    context.fillStyle = grad;
-    context.fill();
+    trace(1);
+    let grad = ctx.createRadialGradient(ox, oy, 6, ox, oy, range);
+    grad.addColorStop(0, `${tint}0.50)`);
+    grad.addColorStop(0.55, `${tint}0.26)`);
+    grad.addColorStop(1, `${tint}0.02)`);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // hot core near the lamp itself
+    trace(0.55);
+    grad = ctx.createRadialGradient(ox, oy, 4, ox, oy, range * 0.55);
+    grad.addColorStop(0, `${tint}0.55)`);
+    grad.addColorStop(1, `${tint}0.05)`);
+    ctx.fillStyle = grad;
+    ctx.fill();
   }
 
-  function drawGuardBeam(state, guard) {
-    drawBeam(state, guard.x, guard.y, guard.angle, GUARD.viewHalfAngle, GUARD.viewRange, guard.alert ? ART.beamAlert : ART.beam);
+  // ---- cover --------------------------------------------------------------
+  function dropShadow(rect) {
+    ctx.fillStyle = SHADOW;
+    ctx.fillRect(rect.x + 5, rect.y + 7, rect.width, rect.height);
   }
 
-  function drawCameraBeam(state, camera) {
-    drawBeam(state, camera.x, camera.y, camera.angle, CAMERA.viewHalfAngle, CAMERA.viewRange, camera.alert ? ART.camBeamAlert : ART.camBeam);
+  function outlineRect(rect, width = 2.5) {
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = width;
+    ctx.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
   }
 
-  // ---- Cover: brick walls, glass cases, planked crates. ----
-  function drawShadow(rect) {
-    context.fillStyle = 'rgba(12, 14, 32, 0.35)';
-    context.fillRect(rect.x + 5, rect.y + 7, rect.width, rect.height);
-  }
+  function paintWall(rect) {
+    dropShadow(rect);
+    const grad = ctx.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.height);
+    grad.addColorStop(0, BRICK.top);
+    grad.addColorStop(0.18, BRICK.mid);
+    grad.addColorStop(1, BRICK.low);
+    ctx.fillStyle = grad;
+    ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 
-  function drawWall(rect) {
-    drawShadow(rect);
-    const grad = context.createLinearGradient(rect.x, rect.y, rect.x, rect.y + rect.height);
-    grad.addColorStop(0, ART.brickTop);
-    grad.addColorStop(0.18, ART.brick);
-    grad.addColorStop(1, ART.brickDark);
-    context.fillStyle = grad;
-    context.fillRect(rect.x, rect.y, rect.width, rect.height);
     const course = 16;
     const brickW = 34;
-    context.strokeStyle = ART.brickLine;
-    context.lineWidth = 2;
-    context.beginPath();
+    ctx.strokeStyle = BRICK.line;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
     for (let y = rect.y + course; y < rect.y + rect.height; y += course) {
-      context.moveTo(rect.x, y);
-      context.lineTo(rect.x + rect.width, y);
+      ctx.moveTo(rect.x, y);
+      ctx.lineTo(rect.x + rect.width, y);
     }
-    context.stroke();
-    context.beginPath();
+    ctx.stroke();
+    ctx.beginPath();
     let row = 0;
     for (let y = rect.y; y < rect.y + rect.height; y += course) {
-      const offset = row % 2 === 0 ? 0 : brickW / 2;
+      const offset = row % 2 ? brickW / 2 : 0;
       for (let x = rect.x + offset; x < rect.x + rect.width; x += brickW) {
         if (x > rect.x) {
-          context.moveTo(x, y);
-          context.lineTo(x, Math.min(y + course, rect.y + rect.height));
+          ctx.moveTo(x, y);
+          ctx.lineTo(x, Math.min(y + course, rect.y + rect.height));
         }
       }
       row += 1;
     }
-    context.stroke();
-    context.fillStyle = 'rgba(210, 225, 255, 0.35)';
-    context.fillRect(rect.x, rect.y, rect.width, 4);
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2.5;
-    context.strokeRect(rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(210, 225, 255, 0.35)';
+    ctx.fillRect(rect.x, rect.y, rect.width, 4);
+    outlineRect(rect);
   }
 
-  function drawCase(rect) {
-    drawShadow(rect);
+  function paintCase(rect) {
+    dropShadow(rect);
     const { x, y, width: w, height: h } = rect;
-    // Wooden base.
-    const baseGrad = context.createLinearGradient(x, y, x, y + h);
-    baseGrad.addColorStop(0, ART.caseBase);
-    baseGrad.addColorStop(1, ART.caseBaseDark);
-    context.fillStyle = baseGrad;
-    context.fillRect(x, y + h * 0.62, w, h * 0.38);
-    // Glass top.
-    context.fillStyle = ART.glass;
-    context.fillRect(x, y, w, h * 0.66);
-    // Exhibit inside: a tiny vase silhouette.
-    context.fillStyle = 'rgba(242, 201, 76, 0.85)';
-    context.beginPath();
-    context.ellipse(x + w / 2, y + h * 0.42, w * 0.13, h * 0.2, 0, 0, Math.PI * 2);
-    context.fill();
-    context.fillRect(x + w / 2 - w * 0.06, y + h * 0.14, w * 0.12, h * 0.12);
-    // Glass highlight diagonal.
-    context.strokeStyle = ART.glassHi;
-    context.lineWidth = 4;
-    context.beginPath();
-    context.moveTo(x + w * 0.18, y + h * 0.6);
-    context.lineTo(x + w * 0.42, y + 5);
-    context.stroke();
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(x + w * 0.5, y + h * 0.6);
-    context.lineTo(x + w * 0.64, y + 5);
-    context.stroke();
-    // Frame.
-    context.strokeStyle = ART.caseBaseDark;
-    context.lineWidth = 4;
-    context.strokeRect(x + 2, y + 2, w - 4, h - 4);
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2.5;
-    context.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    // plinth
+    const grad = ctx.createLinearGradient(x, y, x, y + h);
+    grad.addColorStop(0, CASE.baseTop);
+    grad.addColorStop(1, CASE.baseLow);
+    ctx.fillStyle = grad;
+    ctx.fillRect(x, y + h * 0.62, w, h * 0.38);
+    // glass hood
+    ctx.fillStyle = CASE.glass;
+    ctx.fillRect(x, y, w, h * 0.66);
+    // the little golden vase inside
+    ctx.fillStyle = 'rgba(242, 201, 76, 0.85)';
+    ellipse(x + w / 2, y + h * 0.42, w * 0.13, h * 0.2);
+    ctx.fill();
+    ctx.fillRect(x + w / 2 - w * 0.06, y + h * 0.14, w * 0.12, h * 0.12);
+    // reflections streaking down the glass
+    ctx.strokeStyle = CASE.shine;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.18, y + h * 0.6);
+    ctx.lineTo(x + w * 0.42, y + 5);
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.5, y + h * 0.6);
+    ctx.lineTo(x + w * 0.64, y + 5);
+    ctx.stroke();
+    ctx.strokeStyle = CASE.baseLow;
+    ctx.lineWidth = 4;
+    ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
+    outlineRect(rect);
   }
 
-  function drawCrate(rect) {
-    drawShadow(rect);
+  function paintCrate(rect) {
+    dropShadow(rect);
     const { x, y, width: w, height: h } = rect;
-    context.fillStyle = ART.wood;
-    context.fillRect(x, y, w, h);
+    ctx.fillStyle = WOOD.mid;
+    ctx.fillRect(x, y, w, h);
     const planks = 3;
     const ph = h / planks;
     for (let i = 0; i < planks; i += 1) {
       const py = y + i * ph;
-      context.fillStyle = i % 2 === 0 ? ART.woodLight : ART.wood;
-      context.fillRect(x + 3, py + 3, w - 6, ph - 6);
-      context.strokeStyle = 'rgba(111, 76, 39, 0.55)';
-      context.lineWidth = 1.5;
-      context.beginPath();
-      for (let gline = 0; gline < 2; gline += 1) {
-        const gy = py + ph * (0.35 + gline * 0.3);
-        context.moveTo(x + 8, gy);
-        context.bezierCurveTo(x + w * 0.35, gy - 2, x + w * 0.65, gy + 2, x + w - 8, gy);
+      ctx.fillStyle = i % 2 ? WOOD.mid : WOOD.light;
+      ctx.fillRect(x + 3, py + 3, w - 6, ph - 6);
+      ctx.strokeStyle = WOOD.grain;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (const frac of [0.35, 0.65]) {
+        const gy = py + ph * frac;
+        ctx.moveTo(x + 8, gy);
+        ctx.bezierCurveTo(x + w * 0.35, gy - 2, x + w * 0.65, gy + 2, x + w - 8, gy);
       }
-      context.stroke();
+      ctx.stroke();
     }
-    context.strokeStyle = ART.woodDark;
-    context.lineWidth = 6;
-    context.strokeRect(x + 3, y + 3, w - 6, h - 6);
-    context.lineWidth = 5;
-    context.beginPath();
-    context.moveTo(x + 5, y + h - 5);
-    context.lineTo(x + w - 5, y + 5);
-    context.stroke();
-    context.fillStyle = '#4a3319';
+    ctx.strokeStyle = WOOD.dark;
+    ctx.lineWidth = 6;
+    ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.moveTo(x + 5, y + h - 5);
+    ctx.lineTo(x + w - 5, y + 5);
+    ctx.stroke();
+    ctx.fillStyle = '#4a3319';
     for (const [nx, ny] of [[x + 8, y + 8], [x + w - 8, y + 8], [x + 8, y + h - 8], [x + w - 8, y + h - 8]]) {
-      context.beginPath();
-      context.arc(nx, ny, 2.4, 0, Math.PI * 2);
-      context.fill();
+      ctx.beginPath();
+      ctx.arc(nx, ny, 2.4, 0, TAU);
+      ctx.fill();
     }
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2.5;
-    context.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    outlineRect(rect);
   }
 
-  function drawCover(rect) {
-    if (rect.kind === 'case') drawCase(rect);
-    else if (rect.kind === 'crate') drawCrate(rect);
-    else drawWall(rect);
+  function paintCover(rect) {
+    if (rect.kind === 'case') paintCase(rect);
+    else if (rect.kind === 'crate') paintCrate(rect);
+    else paintWall(rect);
   }
 
-  // ---- Getaway door: a glowing sign door with light spilling out. ----
-  function drawExit(state) {
-    const exit = state.exit;
+  // ---- the getaway door ---------------------------------------------------
+  function paintExit(state) {
+    const door = state.exit;
     const open = state.hasLoot;
     const pulse = 0.75 + 0.25 * Math.sin(state.totalTime * 3.2);
     if (open) {
-      const spill = context.createLinearGradient(exit.x, 0, exit.x - 90, 0);
+      // green light spilling out of the doorway
+      const spill = ctx.createLinearGradient(door.x, 0, door.x - 90, 0);
       spill.addColorStop(0, `rgba(79, 227, 165, ${0.28 * pulse})`);
       spill.addColorStop(1, 'rgba(79, 227, 165, 0)');
-      context.fillStyle = spill;
-      context.beginPath();
-      context.moveTo(exit.x, exit.y + 6);
-      context.lineTo(exit.x - 90, exit.y - 14);
-      context.lineTo(exit.x - 90, exit.y + exit.height + 14);
-      context.lineTo(exit.x, exit.y + exit.height - 6);
-      context.closePath();
-      context.fill();
+      ctx.fillStyle = spill;
+      ctx.beginPath();
+      ctx.moveTo(door.x, door.y + 6);
+      ctx.lineTo(door.x - 90, door.y - 14);
+      ctx.lineTo(door.x - 90, door.y + door.height + 14);
+      ctx.lineTo(door.x, door.y + door.height - 6);
+      ctx.closePath();
+      ctx.fill();
     }
-    context.fillStyle = '#1d2b26';
-    context.fillRect(exit.x - 4, exit.y - 4, exit.width + 8, exit.height + 8);
-    const doorGrad = context.createLinearGradient(exit.x, exit.y, exit.x, exit.y + exit.height);
-    doorGrad.addColorStop(0, open ? '#57d9a3' : '#5d7268');
-    doorGrad.addColorStop(1, open ? '#2f9d72' : '#42534b');
-    context.fillStyle = doorGrad;
-    context.fillRect(exit.x, exit.y, exit.width, exit.height);
-    context.strokeStyle = 'rgba(20, 40, 32, 0.55)';
-    context.lineWidth = 2;
-    context.strokeRect(exit.x + 7, exit.y + 26, exit.width - 14, exit.height - 36);
-    context.fillStyle = '#ffe9a8';
-    context.beginPath();
-    context.arc(exit.x + 12, exit.y + exit.height / 2 + 12, 3.5, 0, Math.PI * 2);
-    context.fill();
-    context.save();
+    ctx.fillStyle = '#1d2b26';
+    ctx.fillRect(door.x - 4, door.y - 4, door.width + 8, door.height + 8);
+    const grad = ctx.createLinearGradient(door.x, door.y, door.x, door.y + door.height);
+    grad.addColorStop(0, open ? '#57d9a3' : '#5d7268');
+    grad.addColorStop(1, open ? '#2f9d72' : '#42534b');
+    ctx.fillStyle = grad;
+    ctx.fillRect(door.x, door.y, door.width, door.height);
+    ctx.strokeStyle = 'rgba(20, 40, 32, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(door.x + 7, door.y + 26, door.width - 14, door.height - 36);
+    // handle
+    ctx.fillStyle = '#ffe9a8';
+    ctx.beginPath();
+    ctx.arc(door.x + 12, door.y + door.height / 2 + 12, 3.5, 0, TAU);
+    ctx.fill();
+    // the EXIT sign (glowing once the gem is pocketed)
+    ctx.save();
     if (open) {
-      context.shadowColor = ART.exitGlow;
-      context.shadowBlur = 16 * pulse;
+      ctx.shadowColor = EXIT_GREEN;
+      ctx.shadowBlur = 16 * pulse;
     }
-    roundRectPath(exit.x + 4, exit.y + 4, exit.width - 8, 22, 6);
-    context.fillStyle = open ? '#eafff5' : '#9fb3a8';
-    context.fill();
-    context.restore();
-    context.textBaseline = 'middle';
-    text('EXIT', exit.x + exit.width / 2, exit.y + 16, 15, open ? '#14724e' : '#3d4f46', 'center', 'bold');
+    rounded(door.x + 4, door.y + 4, door.width - 8, 22, 6);
+    ctx.fillStyle = open ? '#eafff5' : '#9fb3a8';
+    ctx.fill();
+    ctx.restore();
+    ctx.textBaseline = 'middle';
+    label('EXIT', door.x + door.width / 2, door.y + 16, 15, open ? '#14724e' : '#3d4f46', 'center', true);
     if (open) {
-      text('GO!', exit.x + exit.width / 2, exit.y + exit.height - 12, 14, '#eafff5', 'center', 'bold');
+      label('GO!', door.x + door.width / 2, door.y + door.height - 12, 14, '#eafff5', 'center', true);
     } else {
-      const lx = exit.x + exit.width / 2;
-      const ly = exit.y + exit.height - 16;
-      context.strokeStyle = '#d7e6de';
-      context.lineWidth = 2.5;
-      context.beginPath();
-      context.arc(lx, ly - 4, 5, Math.PI, 0);
-      context.stroke();
-      context.fillStyle = '#d7e6de';
-      roundRectPath(lx - 7, ly - 4, 14, 11, 3);
-      context.fill();
-      context.fillStyle = '#42534b';
-      context.beginPath();
-      context.arc(lx, ly + 1, 2.2, 0, Math.PI * 2);
-      context.fill();
+      // padlock
+      const lx = door.x + door.width / 2;
+      const ly = door.y + door.height - 16;
+      ctx.strokeStyle = '#d7e6de';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(lx, ly - 4, 5, Math.PI, 0);
+      ctx.stroke();
+      ctx.fillStyle = '#d7e6de';
+      rounded(lx - 7, ly - 4, 14, 11, 3);
+      ctx.fill();
+      ctx.fillStyle = '#42534b';
+      ctx.beginPath();
+      ctx.arc(lx, ly + 1, 2.2, 0, TAU);
+      ctx.fill();
     }
   }
 
-  // ---- Loot: a faceted gem on a pedestal, with a grab ring. ----
-  function drawGem(cx, cy, size) {
-    const s = size;
-    // Crown (top) facet.
-    context.fillStyle = ART.gemHi;
-    context.beginPath();
-    context.moveTo(cx - s, cy - s * 0.25);
-    context.lineTo(cx - s * 0.55, cy - s * 0.8);
-    context.lineTo(cx + s * 0.55, cy - s * 0.8);
-    context.lineTo(cx + s, cy - s * 0.25);
-    context.closePath();
-    context.fill();
-    // Body facet.
-    context.fillStyle = ART.gem;
-    context.beginPath();
-    context.moveTo(cx - s, cy - s * 0.25);
-    context.lineTo(cx + s, cy - s * 0.25);
-    context.lineTo(cx, cy + s);
-    context.closePath();
-    context.fill();
-    // Shade facet.
-    context.fillStyle = ART.gemDark;
-    context.beginPath();
-    context.moveTo(cx, cy - s * 0.25);
-    context.lineTo(cx + s, cy - s * 0.25);
-    context.lineTo(cx, cy + s);
-    context.closePath();
-    context.fill();
-    // Facet lines + outline.
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(cx - s, cy - s * 0.25);
-    context.lineTo(cx - s * 0.55, cy - s * 0.8);
-    context.lineTo(cx + s * 0.55, cy - s * 0.8);
-    context.lineTo(cx + s, cy - s * 0.25);
-    context.lineTo(cx, cy + s);
-    context.closePath();
-    context.stroke();
-    context.beginPath();
-    context.moveTo(cx - s, cy - s * 0.25);
-    context.lineTo(cx + s, cy - s * 0.25);
-    context.moveTo(cx, cy - s * 0.8);
-    context.lineTo(cx, cy - s * 0.25);
-    context.stroke();
-    // Sparkle.
-    context.fillStyle = '#ffffff';
-    context.beginPath();
-    context.moveTo(cx - s * 0.35, cy - s * 1.05);
-    context.lineTo(cx - s * 0.22, cy - s * 0.6);
-    context.lineTo(cx - s * 0.35, cy - s * 0.25);
-    context.lineTo(cx - s * 0.48, cy - s * 0.6);
-    context.closePath();
-    context.fill();
+  // ---- the gem and its pedestal -------------------------------------------
+  function paintGem(cx, cy, s) {
+    // table (top face)
+    ctx.fillStyle = GEM.hi;
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy - s * 0.25);
+    ctx.lineTo(cx - s * 0.55, cy - s * 0.8);
+    ctx.lineTo(cx + s * 0.55, cy - s * 0.8);
+    ctx.lineTo(cx + s, cy - s * 0.25);
+    ctx.closePath();
+    ctx.fill();
+    // pavilion, lit half then shaded half
+    ctx.fillStyle = GEM.mid;
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy - s * 0.25);
+    ctx.lineTo(cx + s, cy - s * 0.25);
+    ctx.lineTo(cx, cy + s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = GEM.low;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - s * 0.25);
+    ctx.lineTo(cx + s, cy - s * 0.25);
+    ctx.lineTo(cx, cy + s);
+    ctx.closePath();
+    ctx.fill();
+    // facet edges
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy - s * 0.25);
+    ctx.lineTo(cx - s * 0.55, cy - s * 0.8);
+    ctx.lineTo(cx + s * 0.55, cy - s * 0.8);
+    ctx.lineTo(cx + s, cy - s * 0.25);
+    ctx.lineTo(cx, cy + s);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy - s * 0.25);
+    ctx.lineTo(cx + s, cy - s * 0.25);
+    ctx.moveTo(cx, cy - s * 0.8);
+    ctx.lineTo(cx, cy - s * 0.25);
+    ctx.stroke();
+    // one bright sparkle
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.moveTo(cx - s * 0.35, cy - s * 1.05);
+    ctx.lineTo(cx - s * 0.22, cy - s * 0.6);
+    ctx.lineTo(cx - s * 0.35, cy - s * 0.25);
+    ctx.lineTo(cx - s * 0.48, cy - s * 0.6);
+    ctx.closePath();
+    ctx.fill();
   }
 
-  function drawLoot(state, pulse) {
+  function paintLoot(state) {
     const p = state.lootPos;
-    const halo = context.createRadialGradient(p.x, p.y, 4, p.x, p.y, 38 + pulse * 9);
+    const pulse = (Math.sin(state.totalTime * 3) + 1) / 2;
+    // halo
+    const halo = ctx.createRadialGradient(p.x, p.y, 4, p.x, p.y, 38 + pulse * 9);
     halo.addColorStop(0, 'rgba(140, 255, 230, 0.5)');
     halo.addColorStop(1, 'rgba(140, 255, 230, 0)');
-    context.fillStyle = halo;
-    context.beginPath();
-    context.arc(p.x, p.y, 38 + pulse * 9, 0, Math.PI * 2);
-    context.fill();
-    // Pedestal.
-    context.fillStyle = 'rgba(12, 14, 32, 0.35)';
-    context.beginPath();
-    context.ellipse(p.x, p.y + 20, 24, 7, 0, 0, Math.PI * 2);
-    context.fill();
-    const pedGrad = context.createLinearGradient(p.x, p.y + 4, p.x, p.y + 20);
-    pedGrad.addColorStop(0, '#8fa3d9');
-    pedGrad.addColorStop(1, '#46537a');
-    context.fillStyle = pedGrad;
-    context.beginPath();
-    context.moveTo(p.x - 13, p.y + 18);
-    context.lineTo(p.x - 9, p.y + 4);
-    context.lineTo(p.x + 9, p.y + 4);
-    context.lineTo(p.x + 13, p.y + 18);
-    context.closePath();
-    context.fill();
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2;
-    context.stroke();
-    drawGem(p.x, p.y - 6 - pulse * 2, 15);
-    // Orbiting sparkles.
-    context.fillStyle = '#d8fff4';
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 38 + pulse * 9, 0, TAU);
+    ctx.fill();
+    // pedestal shadow + stand
+    ctx.fillStyle = SHADOW;
+    ellipse(p.x, p.y + 20, 24, 7);
+    ctx.fill();
+    const grad = ctx.createLinearGradient(p.x, p.y + 4, p.x, p.y + 20);
+    grad.addColorStop(0, '#8fa3d9');
+    grad.addColorStop(1, '#46537a');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(p.x - 13, p.y + 18);
+    ctx.lineTo(p.x - 9, p.y + 4);
+    ctx.lineTo(p.x + 9, p.y + 4);
+    ctx.lineTo(p.x + 13, p.y + 18);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    paintGem(p.x, p.y - 6 - pulse * 2, 15);
+    // sparkles drifting around it
+    ctx.fillStyle = GEM.hi;
     for (let i = 0; i < 3; i += 1) {
       const a = state.totalTime * 1.6 + i * 2.1;
       const sx = p.x + Math.cos(a) * 27;
       const sy = p.y - 10 + Math.sin(a) * 13;
       const r = 3 + Math.sin(state.totalTime * 4 + i) * 1.2;
-      context.beginPath();
-      context.moveTo(sx, sy - r * 1.8);
-      context.lineTo(sx + r * 0.5, sy);
-      context.lineTo(sx, sy + r * 1.8);
-      context.lineTo(sx - r * 0.5, sy);
-      context.closePath();
-      context.fill();
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - r * 1.8);
+      ctx.lineTo(sx + r * 0.5, sy);
+      ctx.lineTo(sx, sy + r * 1.8);
+      ctx.lineTo(sx - r * 0.5, sy);
+      ctx.closePath();
+      ctx.fill();
     }
-    // Grab progress ring.
+    // grab-progress ring while the thief stands at the pedestal
     if (state.grabProgress > 0) {
-      context.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-      context.lineWidth = 5;
-      context.beginPath();
-      context.arc(p.x, p.y - 4, 30, 0, Math.PI * 2);
-      context.stroke();
-      context.strokeStyle = ART.gem;
-      context.beginPath();
-      context.arc(p.x, p.y - 4, 30, -Math.PI / 2, -Math.PI / 2 + state.grabProgress * Math.PI * 2);
-      context.stroke();
-      context.textBaseline = 'middle';
-      text('GRABBING…', p.x, p.y - 48, 14, '#d8fff4', 'center', 'bold');
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - 4, 30, 0, TAU);
+      ctx.stroke();
+      ctx.strokeStyle = GEM.mid;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - 4, 30, -Math.PI / 2, -Math.PI / 2 + state.grabProgress * TAU);
+      ctx.stroke();
+      ctx.textBaseline = 'middle';
+      label('GRABBING…', p.x, p.y - 48, 14, GEM.hi, 'center', true);
     }
   }
 
-  // ---- Smoke puffs and the decoy coin. ----
-  function drawSmoke(state) {
-    for (const smoke of state.smokes) {
-      const fade = Math.min(1, smoke.timer / 1.2);
+  // ---- tools on the floor ---------------------------------------------------
+  function paintSmoke(state) {
+    for (const puff of state.smokes) {
+      const fade = Math.min(1, puff.timer / 1.2);
       for (let i = 0; i < 5; i += 1) {
-        const a = i * 1.7 + smoke.x * 0.01;
+        const a = i * 1.7 + puff.x * 0.01;
         const ox = Math.cos(a) * TOOLS.smokeRadius * 0.4;
         const oy = Math.sin(a) * TOOLS.smokeRadius * 0.3;
-        const r = TOOLS.smokeRadius * (0.55 + hash2(i, Math.floor(smoke.x)) * 0.3);
-        const grad = context.createRadialGradient(smoke.x + ox, smoke.y + oy, 2, smoke.x + ox, smoke.y + oy, r);
+        const r = TOOLS.smokeRadius * (0.55 + scramble(i, Math.floor(puff.x)) * 0.3);
+        const grad = ctx.createRadialGradient(puff.x + ox, puff.y + oy, 2, puff.x + ox, puff.y + oy, r);
         grad.addColorStop(0, `rgba(220, 226, 240, ${0.55 * fade})`);
         grad.addColorStop(1, 'rgba(220, 226, 240, 0)');
-        context.fillStyle = grad;
-        context.beginPath();
-        context.arc(smoke.x + ox, smoke.y + oy, r, 0, Math.PI * 2);
-        context.fill();
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(puff.x + ox, puff.y + oy, r, 0, TAU);
+        ctx.fill();
       }
     }
   }
 
-  function drawDecoy(state) {
+  function paintDecoy(state) {
     const d = state.decoy;
     if (!d) return;
     const pulse = (Math.sin(state.totalTime * 8) + 1) / 2;
-    context.strokeStyle = `rgba(242, 201, 76, ${0.5 + pulse * 0.4})`;
-    context.lineWidth = 2.5;
-    context.beginPath();
-    context.arc(d.x, d.y, 12 + pulse * 6, 0, Math.PI * 2);
-    context.stroke();
-    // The coin itself.
-    context.fillStyle = ART.gold;
-    context.beginPath();
-    context.ellipse(d.x, d.y, 8, 5.5, 0, 0, Math.PI * 2);
-    context.fill();
-    context.strokeStyle = '#8a6a1a';
-    context.lineWidth = 1.8;
-    context.stroke();
-    context.textBaseline = 'middle';
-    text('♪', d.x + 12, d.y - 12, 18, ART.gold, 'left', 'bold');
+    ctx.strokeStyle = `rgba(242, 201, 76, ${0.5 + pulse * 0.4})`;
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(d.x, d.y, 12 + pulse * 6, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = GOLD;
+    ellipse(d.x, d.y, 8, 5.5);
+    ctx.fill();
+    ctx.strokeStyle = '#8a6a1a';
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.textBaseline = 'middle';
+    label('♪', d.x + 12, d.y - 12, 18, GOLD, 'left', true);
   }
 
-  // ---- Slimes: cel-shaded dome bodies with faces. ----
-  function slimeBody(x, y, r, squash, body, shade, deep) {
+  // ---- slimes ---------------------------------------------------------------
+  // One dome-shaped body with a cel-shaded belly, a gloss highlight and an
+  // outline. `squash` stretches it sideways as it bounces.
+  function slimeDome(x, y, r, squash, art) {
     const w = r * (1 + squash);
     const h = r * (1 - squash * 0.7);
-    context.fillStyle = 'rgba(12, 14, 32, 0.35)';
-    context.beginPath();
-    context.ellipse(x, y + h * 0.82, w * 0.95, h * 0.3, 0, 0, Math.PI * 2);
-    context.fill();
-    context.beginPath();
-    context.moveTo(x - w, y + h * 0.55);
-    context.bezierCurveTo(x - w, y - h * 0.55, x - w * 0.45, y - h, x, y - h);
-    context.bezierCurveTo(x + w * 0.45, y - h, x + w, y - h * 0.55, x + w, y + h * 0.55);
-    context.bezierCurveTo(x + w, y + h * 0.85, x + w * 0.5, y + h * 0.95, x, y + h * 0.95);
-    context.bezierCurveTo(x - w * 0.5, y + h * 0.95, x - w, y + h * 0.85, x - w, y + h * 0.55);
-    context.closePath();
-    const grad = context.createLinearGradient(x, y - h, x, y + h);
-    grad.addColorStop(0, body);
-    grad.addColorStop(0.62, body);
-    grad.addColorStop(1, shade);
-    context.fillStyle = grad;
-    context.fill();
-    context.save();
-    context.clip();
-    context.fillStyle = shade;
-    context.beginPath();
-    context.ellipse(x, y + h * 1.15, w * 1.05, h * 0.55, 0, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = 'rgba(255, 255, 255, 0.20)';
-    context.beginPath();
-    context.ellipse(x - w * 0.35, y - h * 0.45, w * 0.34, h * 0.2, -0.5, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-    context.strokeStyle = deep;
-    context.lineWidth = 2.5;
-    context.beginPath();
-    context.moveTo(x - w, y + h * 0.55);
-    context.bezierCurveTo(x - w, y - h * 0.55, x - w * 0.45, y - h, x, y - h);
-    context.bezierCurveTo(x + w * 0.45, y - h, x + w, y - h * 0.55, x + w, y + h * 0.55);
-    context.bezierCurveTo(x + w, y + h * 0.85, x + w * 0.5, y + h * 0.95, x, y + h * 0.95);
-    context.bezierCurveTo(x - w * 0.5, y + h * 0.95, x - w, y + h * 0.85, x - w, y + h * 0.55);
-    context.closePath();
-    context.stroke();
-    context.fillStyle = 'rgba(255, 255, 255, 0.75)';
-    context.beginPath();
-    context.ellipse(x - w * 0.38, y - h * 0.52, w * 0.2, h * 0.11, -0.6, 0, Math.PI * 2);
-    context.fill();
+    ctx.fillStyle = SHADOW;
+    ellipse(x, y + h * 0.82, w * 0.95, h * 0.3);
+    ctx.fill();
+
+    const dome = () => {
+      ctx.beginPath();
+      ctx.moveTo(x - w, y + h * 0.55);
+      ctx.bezierCurveTo(x - w, y - h * 0.55, x - w * 0.45, y - h, x, y - h);
+      ctx.bezierCurveTo(x + w * 0.45, y - h, x + w, y - h * 0.55, x + w, y + h * 0.55);
+      ctx.bezierCurveTo(x + w, y + h * 0.85, x + w * 0.5, y + h * 0.95, x, y + h * 0.95);
+      ctx.bezierCurveTo(x - w * 0.5, y + h * 0.95, x - w, y + h * 0.85, x - w, y + h * 0.55);
+      ctx.closePath();
+    };
+    const grad = ctx.createLinearGradient(x, y - h, x, y + h);
+    grad.addColorStop(0, art.body);
+    grad.addColorStop(0.62, art.body);
+    grad.addColorStop(1, art.shade);
+    dome();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.save();
+    ctx.clip();
+    ctx.fillStyle = art.shade;
+    ellipse(x, y + h * 1.15, w * 1.05, h * 0.55);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.20)';
+    ellipse(x - w * 0.35, y - h * 0.45, w * 0.34, h * 0.2, -0.5);
+    ctx.fill();
+    ctx.restore();
+    dome();
+    ctx.strokeStyle = art.edge;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ellipse(x - w * 0.38, y - h * 0.52, w * 0.2, h * 0.11, -0.6);
+    ctx.fill();
   }
 
-  function slimeFace(x, y, r, angle, opts) {
-    const lookX = Math.cos(angle) * r * 0.16;
-    const lookY = Math.sin(angle) * r * 0.1;
-    const eyeY = y - r * 0.08 + lookY;
-    const spread = r * 0.34;
-    for (const dir of [-1, 1]) {
-      const ex = x + dir * spread + lookX;
-      context.fillStyle = ART.eye;
-      context.beginPath();
-      context.ellipse(ex, eyeY, r * 0.11, r * 0.17, 0, 0, Math.PI * 2);
-      context.fill();
-      context.fillStyle = '#ffffff';
-      context.beginPath();
-      context.arc(ex - r * 0.03, eyeY - r * 0.06, r * 0.045, 0, Math.PI * 2);
-      context.fill();
+  // Eyes that glance toward the facing, a mouth, and blush cheeks.
+  // mood: 'calm' | 'sly' | 'startled'
+  function slimeFace(x, y, r, heading, mood) {
+    const gx = Math.cos(heading) * r * 0.16;
+    const gy = Math.sin(heading) * r * 0.1;
+    const eyeY = y - r * 0.08 + gy;
+    for (const side of [-1, 1]) {
+      const ex = x + side * r * 0.34 + gx;
+      ctx.fillStyle = EYE;
+      ellipse(ex, eyeY, r * 0.11, r * 0.17);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(ex - r * 0.03, eyeY - r * 0.06, r * 0.045, 0, TAU);
+      ctx.fill();
     }
-    context.strokeStyle = ART.eye;
-    context.lineWidth = 2;
-    context.beginPath();
-    if (opts && opts.surprised) {
-      context.arc(x + lookX, y + r * 0.24, r * 0.1, 0, Math.PI * 2);
-      context.fillStyle = ART.eye;
-      context.fill();
-    } else if (opts && opts.sly) {
-      // A sly side-smile for the thief.
-      context.arc(x + lookX + r * 0.06, y + r * 0.1, r * 0.16, 0.15 * Math.PI, 0.62 * Math.PI);
-      context.stroke();
+    ctx.strokeStyle = EYE;
+    ctx.lineWidth = 2;
+    if (mood === 'startled') {
+      ctx.fillStyle = EYE;
+      ctx.beginPath();
+      ctx.arc(x + gx, y + r * 0.24, r * 0.1, 0, TAU);
+      ctx.fill();
+    } else if (mood === 'sly') {
+      ctx.beginPath();
+      ctx.arc(x + gx + r * 0.06, y + r * 0.1, r * 0.16, 0.15 * Math.PI, 0.62 * Math.PI);
+      ctx.stroke();
     } else {
-      context.arc(x + lookX, y + r * 0.14, r * 0.14, 0.25 * Math.PI, 0.75 * Math.PI);
-      context.stroke();
+      ctx.beginPath();
+      ctx.arc(x + gx, y + r * 0.14, r * 0.14, 0.25 * Math.PI, 0.75 * Math.PI);
+      ctx.stroke();
     }
-    context.fillStyle = ART.blush;
-    for (const dir of [-1, 1]) {
-      context.beginPath();
-      context.ellipse(x + dir * r * 0.58 + lookX, y + r * 0.16, r * 0.16, r * 0.09, 0, 0, Math.PI * 2);
-      context.fill();
+    ctx.fillStyle = BLUSH;
+    for (const side of [-1, 1]) {
+      ellipse(x + side * r * 0.58 + gx, y + r * 0.16, r * 0.16, r * 0.09);
+      ctx.fill();
     }
   }
 
-  function alertBubble(x, y, mark, color) {
-    context.save();
-    context.translate(x, y);
-    context.fillStyle = '#fff7d6';
-    context.strokeStyle = color;
-    context.lineWidth = 2.5;
-    context.beginPath();
-    const spikes = 10;
-    for (let i = 0; i < spikes * 2; i += 1) {
-      const a = (i / (spikes * 2)) * Math.PI * 2;
+  // Starburst badge with a mark in it ("?", "!", "♪") above a watcher.
+  function badge(x, y, mark, colour) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    for (let i = 0; i < 20; i += 1) {
+      const a = (i / 20) * TAU;
       const rr = i % 2 === 0 ? 15 : 10.5;
       const px = Math.cos(a) * rr;
       const py = Math.sin(a) * rr;
-      if (i === 0) context.moveTo(px, py);
-      else context.lineTo(px, py);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
     }
-    context.closePath();
-    context.fill();
-    context.stroke();
-    context.textBaseline = 'middle';
-    text(mark, 0, 1, 19, color, 'center', 'bold');
-    context.restore();
+    ctx.closePath();
+    ctx.fillStyle = '#fff7d6';
+    ctx.fill();
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.textBaseline = 'middle';
+    label(mark, 0, 1, 19, colour, 'center', true);
+    ctx.restore();
   }
 
-  function sweatDrop(x, y, t) {
-    const bob = Math.sin(t * 6) * 2;
-    context.fillStyle = '#9fdcff';
-    context.strokeStyle = '#4d9fd6';
-    context.lineWidth = 1.5;
-    context.beginPath();
-    context.moveTo(x, y - 8 + bob);
-    context.bezierCurveTo(x + 5, y + bob, x + 5.5, y + 4 + bob, x, y + 6 + bob);
-    context.bezierCurveTo(x - 5.5, y + 4 + bob, x - 5, y + bob, x, y - 8 + bob);
-    context.fill();
-    context.stroke();
-    context.fillStyle = 'rgba(255,255,255,0.8)';
-    context.beginPath();
-    context.arc(x - 1.5, y + 1 + bob, 1.4, 0, Math.PI * 2);
-    context.fill();
+  function sweat(x, y, now) {
+    const bob = Math.sin(now * 6) * 2;
+    ctx.fillStyle = '#9fdcff';
+    ctx.strokeStyle = '#4d9fd6';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 8 + bob);
+    ctx.bezierCurveTo(x + 5, y + bob, x + 5.5, y + 4 + bob, x, y + 6 + bob);
+    ctx.bezierCurveTo(x - 5.5, y + 4 + bob, x - 5, y + bob, x, y - 8 + bob);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.beginPath();
+    ctx.arc(x - 1.5, y + 1 + bob, 1.4, 0, TAU);
+    ctx.fill();
   }
 
-  function drawGuard(state, guard) {
-    const m = motionOf(guard, state.totalTime);
+  function paintGuard(state, guard) {
     const r = GUARD.radius + 3;
-    slimeBody(guard.x, guard.y, r, m.squash, ART.guardBody, ART.guardShade, ART.guardDeep);
+    slimeDome(guard.x, guard.y, r, bounceOf(guard, state.totalTime), GUARD_ART);
     const fx = Math.cos(guard.angle);
     const fy = Math.sin(guard.angle);
-    // Cap: dome + brim toward facing.
-    context.fillStyle = ART.cap;
-    context.beginPath();
-    context.ellipse(guard.x, guard.y - r * 0.72, r * 0.62, r * 0.34, 0, Math.PI, 0);
-    context.fill();
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2;
-    context.stroke();
-    context.fillStyle = ART.capBrim;
-    context.beginPath();
-    context.ellipse(
-      guard.x + fx * r * 0.55, guard.y - r * 0.62 + fy * r * 0.3,
-      r * 0.42, r * 0.16, guard.angle, 0, Math.PI * 2,
-    );
-    context.fill();
-    context.stroke();
-    context.fillStyle = ART.gold;
-    context.beginPath();
-    context.arc(guard.x, guard.y - r * 0.78, 3, 0, Math.PI * 2);
-    context.fill();
-    slimeFace(guard.x, guard.y, r, guard.angle, { surprised: guard.alert });
-    // Flashlight at the facing side.
-    const lx = guard.x + fx * r * 0.95;
-    const ly = guard.y + fy * r * 0.95 + r * 0.25;
-    context.save();
-    context.translate(lx, ly);
-    context.rotate(guard.angle);
-    context.fillStyle = '#3a3f52';
-    roundRectPath(-3, -3.5, 11, 7, 2);
-    context.fill();
-    context.fillStyle = '#ffe9a8';
-    context.beginPath();
-    context.arc(9, 0, 3.2, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
+    // cap with the brim pointing the way it faces
+    ctx.fillStyle = GUARD_ART.cap;
+    ctx.beginPath();
+    ctx.ellipse(guard.x, guard.y - r * 0.72, r * 0.62, r * 0.34, 0, Math.PI, 0);
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = GUARD_ART.brim;
+    ellipse(guard.x + fx * r * 0.55, guard.y - r * 0.62 + fy * r * 0.3, r * 0.42, r * 0.16, guard.angle);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = GOLD;
+    ctx.beginPath();
+    ctx.arc(guard.x, guard.y - r * 0.78, 3, 0, TAU);
+    ctx.fill();
+    slimeFace(guard.x, guard.y, r, guard.angle, guard.alert ? 'startled' : 'calm');
+    // flashlight held out front
+    ctx.save();
+    ctx.translate(guard.x + fx * r * 0.95, guard.y + fy * r * 0.95 + r * 0.25);
+    ctx.rotate(guard.angle);
+    ctx.fillStyle = '#3a3f52';
+    rounded(-3, -3.5, 11, 7, 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffe9a8';
+    ctx.beginPath();
+    ctx.arc(9, 0, 3.2, 0, TAU);
+    ctx.fill();
+    ctx.restore();
     if (guard.alert) {
-      const high = state.alarm >= 0.85;
-      alertBubble(guard.x + r * 0.9, guard.y - r * 1.25, high ? '!' : '?', high ? PALETTE.danger : '#e8a13a');
+      const hot = state.alarm >= 0.85;
+      badge(guard.x + r * 0.9, guard.y - r * 1.25, hot ? '!' : '?', hot ? PALETTE.danger : '#e8a13a');
     } else if (guard.mode === 'investigate') {
-      alertBubble(guard.x + r * 0.9, guard.y - r * 1.25, '♪', '#8a6a1a');
+      badge(guard.x + r * 0.9, guard.y - r * 1.25, '♪', '#8a6a1a');
     }
   }
 
-  function drawCamera(state, camera) {
+  function paintCamera(state, camera) {
     const { x, y, angle } = camera;
-    // Wall mount.
-    context.fillStyle = '#3a3f52';
-    context.fillRect(x - 5, y - 14, 10, 10);
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2;
-    context.strokeRect(x - 5, y - 14, 10, 10);
-    // Body, rotated toward facing.
-    context.save();
-    context.translate(x, y);
-    context.rotate(angle);
-    const bodyGrad = context.createLinearGradient(-14, 0, 14, 0);
-    bodyGrad.addColorStop(0, '#aebfe0');
-    bodyGrad.addColorStop(1, '#6b7fa3');
-    context.fillStyle = bodyGrad;
-    roundRectPath(-14, -7, 26, 14, 5);
-    context.fill();
-    context.strokeStyle = ART.outline;
-    context.lineWidth = 2.5;
-    context.stroke();
-    // Lens.
-    context.fillStyle = '#1d2440';
-    context.beginPath();
-    context.arc(13, 0, 5.5, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = '#7dd7ff';
-    context.beginPath();
-    context.arc(14.5, -1.5, 2.2, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = 'rgba(255,255,255,0.85)';
-    context.beginPath();
-    context.arc(15.2, -2.2, 1, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-    // Blinking record light (red when it sees the thief).
-    const blink = camera.alert || Math.sin(state.totalTime * 4 + x * 0.05) > 0.3;
-    if (blink) {
-      context.fillStyle = camera.alert ? '#ff5a4e' : '#ff9a8a';
-      context.beginPath();
-      context.arc(x, y - 18, 3.2, 0, Math.PI * 2);
-      context.fill();
+    // wall bracket
+    ctx.fillStyle = '#3a3f52';
+    ctx.fillRect(x - 5, y - 14, 10, 10);
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x - 5, y - 14, 10, 10);
+    // body swung toward its facing
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    const grad = ctx.createLinearGradient(-14, 0, 14, 0);
+    grad.addColorStop(0, '#aebfe0');
+    grad.addColorStop(1, '#6b7fa3');
+    ctx.fillStyle = grad;
+    rounded(-14, -7, 26, 14, 5);
+    ctx.fill();
+    ctx.strokeStyle = INK;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.fillStyle = '#1d2440';
+    ctx.beginPath();
+    ctx.arc(13, 0, 5.5, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = '#7dd7ff';
+    ctx.beginPath();
+    ctx.arc(14.5, -1.5, 2.2, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.85)';
+    ctx.beginPath();
+    ctx.arc(15.2, -2.2, 1, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+    // recording light: blinks idle, burns red on the thief
+    if (camera.alert || Math.sin(state.totalTime * 4 + x * 0.05) > 0.3) {
+      ctx.fillStyle = camera.alert ? '#ff5a4e' : '#ff9a8a';
+      ctx.beginPath();
+      ctx.arc(x, y - 18, 3.2, 0, TAU);
+      ctx.fill();
     }
-    context.textBaseline = 'middle';
-    text('CAM', x, y + 18, 10, 'rgba(220, 232, 255, 0.8)', 'center', 'bold');
+    ctx.textBaseline = 'middle';
+    label('CAM', x, y + 18, 10, 'rgba(220, 232, 255, 0.8)', 'center', true);
   }
 
-  function drawPlayer(state) {
-    const player = state.player;
-    const m = motionOf(player, state.totalTime);
-    const r = (player.sneaking ? 15 : 17);
-    const squash = player.sneaking ? m.squash + 0.1 : m.squash;
-    // Loot bag on the back once the gem is pocketed.
+  function paintThief(state) {
+    const thief = state.player;
+    const r = thief.sneaking ? 15 : 17;
+    const squash = bounceOf(thief, state.totalTime) + (thief.sneaking ? 0.1 : 0);
+    // loot sack riding behind once the gem is pocketed
     if (state.hasLoot) {
-      const bx = player.x - Math.cos(player.angle) * r * 0.9;
-      const by = player.y - Math.sin(player.angle) * r * 0.9 + 3;
-      context.fillStyle = ART.bag;
-      context.beginPath();
-      context.ellipse(bx, by, 10, 8.5, player.angle, 0, Math.PI * 2);
-      context.fill();
-      context.strokeStyle = ART.outline;
-      context.lineWidth = 2;
-      context.stroke();
-      context.fillStyle = '#6f4c27';
-      context.beginPath();
-      context.ellipse(bx, by - 6, 5, 3, 0, 0, Math.PI * 2);
-      context.fill();
-      drawGem(bx, by - 1, 6);
+      const bx = thief.x - Math.cos(thief.angle) * r * 0.9;
+      const by = thief.y - Math.sin(thief.angle) * r * 0.9 + 3;
+      ctx.fillStyle = THIEF.bag;
+      ellipse(bx, by, 10, 8.5, thief.angle);
+      ctx.fill();
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#6f4c27';
+      ellipse(bx, by - 6, 5, 3);
+      ctx.fill();
+      paintGem(bx, by - 1, 6);
     }
-    slimeBody(player.x, player.y, r, squash, ART.thiefBody, ART.thiefShade, ART.thiefDeep);
-    // Bandit mask across the eyes.
-    const lookX = Math.cos(player.angle) * r * 0.14;
-    const lookY = Math.sin(player.angle) * r * 0.09;
-    context.save();
-    context.translate(player.x + lookX, player.y - r * 0.1 + lookY);
-    context.rotate(Math.sin(player.angle) * 0.15);
-    context.fillStyle = ART.mask;
-    roundRectPath(-r * 0.72, -r * 0.2, r * 1.44, r * 0.4, r * 0.2);
-    context.fill();
-    context.restore();
-    slimeFace(player.x, player.y, r, player.angle, { surprised: state.alarm > 0.6, sly: state.alarm <= 0.6 });
-    if (state.alarm > 0.35) sweatDrop(player.x + r * 0.95, player.y - r * 0.55, state.totalTime);
+    slimeDome(thief.x, thief.y, r, squash, THIEF);
+    // bandit mask across the eyes
+    const gx = Math.cos(thief.angle) * r * 0.14;
+    const gy = Math.sin(thief.angle) * r * 0.09;
+    ctx.save();
+    ctx.translate(thief.x + gx, thief.y - r * 0.1 + gy);
+    ctx.rotate(Math.sin(thief.angle) * 0.15);
+    ctx.fillStyle = THIEF.mask;
+    rounded(-r * 0.72, -r * 0.2, r * 1.44, r * 0.4, r * 0.2);
+    ctx.fill();
+    ctx.restore();
+    slimeFace(thief.x, thief.y, r, thief.angle, state.alarm > 0.6 ? 'startled' : 'sly');
+    if (state.alarm > 0.35) sweat(thief.x + r * 0.95, thief.y - r * 0.55, state.totalTime);
   }
 
-  function drawField(state) {
-    if (!floorCanvas) buildFloor();
-    context.drawImage(floorCanvas, 0, 0);
-    for (const guard of state.guards) drawGuardBeam(state, guard);
-    for (const camera of state.cameras) drawCameraBeam(state, camera);
-    drawExit(state);
-    if (!state.hasLoot) drawLoot(state, (Math.sin(state.totalTime * 3) + 1) / 2);
-    drawDecoy(state);
-    for (const rect of state.cover) drawCover(rect);
-    drawSmoke(state);
-    for (const camera of state.cameras) drawCamera(state, camera);
-    for (const guard of state.guards) drawGuard(state, guard);
-    drawPlayer(state);
-    if (!vignette) buildVignette();
-    context.fillStyle = vignette;
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
+  // ---- one frame --------------------------------------------------------------
+  function paintField(state) {
+    if (!floor) paintFloor();
+    ctx.drawImage(floor, 0, 0);
+    for (const guard of state.guards) {
+      beam(state, guard.x, guard.y, guard.angle, GUARD.viewHalfAngle, GUARD.viewRange, guard.alert ? BEAM.lampHot : BEAM.lamp);
+    }
+    for (const camera of state.cameras) {
+      beam(state, camera.x, camera.y, camera.angle, CAMERA.viewHalfAngle, CAMERA.viewRange, camera.alert ? BEAM.camHot : BEAM.cam);
+    }
+    paintExit(state);
+    if (!state.hasLoot) paintLoot(state);
+    paintDecoy(state);
+    for (const rect of state.cover) paintCover(rect);
+    paintSmoke(state);
+    for (const camera of state.cameras) paintCamera(state, camera);
+    for (const guard of state.guards) paintGuard(state, guard);
+    paintThief(state);
+    ctx.fillStyle = vignette();
+    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   }
 
-  function formatTime(seconds) {
+  function clock(seconds) {
     const whole = Math.floor(seconds);
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
   }
 
-  function hudBack(x, y, w, h) {
-    roundRectPath(x, y, w, h, 10);
-    context.fillStyle = ART.hudBack;
-    context.fill();
-    context.strokeStyle = ART.hudEdge;
-    context.lineWidth = 1.5;
-    context.stroke();
+  function hudPanel(x, y, w, h) {
+    rounded(x, y, w, h, 10);
+    ctx.fillStyle = HUD.fill;
+    ctx.fill();
+    ctx.strokeStyle = HUD.edge;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
 
-  function drawHud(state) {
-    context.textBaseline = 'top';
-    hudBack(14, 10, 460, 64);
-    text(`Room ${state.levelIndex + 1} — ${state.levelName}`, 26, 17, 23, PALETTE.text, 'left', 'bold');
-    text(state.hasLoot ? 'Gem: pocketed — reach the EXIT!' : 'Gem: on the pedestal — stand close to grab', 26, 45, 18, state.hasLoot ? ART.exitGlow : ART.gem, 'left');
-    hudBack(FIELD.width - 196, 10, 182, 64);
-    text(scoreLabel(state.score - state.toolCost), FIELD.width - 26, 17, 23, PALETTE.text, 'right', 'bold');
-    text(formatTime(state.totalTime), FIELD.width - 26, 45, 18, PALETTE.muted, 'right');
-    // Alarm meter, top centre.
-    const barWidth = 230;
-    const barX = (FIELD.width - barWidth) / 2;
-    hudBack(barX - 44, 8, barWidth + 88, 52);
+  function paintHud(state) {
+    ctx.textBaseline = 'top';
+    hudPanel(14, 10, 460, 64);
+    label(`Room ${state.levelIndex + 1} — ${state.levelName}`, 26, 17, 23, PALETTE.text, 'left', true);
+    label(
+      state.hasLoot ? 'Gem: pocketed — reach the EXIT!' : 'Gem: on the pedestal — stand close to grab',
+      26, 45, 18, state.hasLoot ? EXIT_GREEN : GEM.mid,
+    );
+    hudPanel(FIELD.width - 196, 10, 182, 64);
+    label(`Score ${state.score - state.toolCost}`, FIELD.width - 26, 17, 23, PALETTE.text, 'right', true);
+    label(clock(state.totalTime), FIELD.width - 26, 45, 18, PALETTE.muted, 'right');
+
+    // alarm meter across the top centre
+    const barW = 230;
+    const barX = (FIELD.width - barW) / 2;
+    hudPanel(barX - 44, 8, barW + 88, 52);
     const ex = barX - 24;
     const ey = 34;
-    context.strokeStyle = PALETTE.muted;
-    context.lineWidth = 2;
-    context.beginPath();
-    context.ellipse(ex, ey, 11, 7, 0, 0, Math.PI * 2);
-    context.stroke();
-    context.fillStyle = state.alarm > 0.65 ? PALETTE.danger : PALETTE.muted;
-    context.beginPath();
-    context.arc(ex, ey, 3.4, 0, Math.PI * 2);
-    context.fill();
-    text('ALARM', FIELD.width / 2, 13, 14, PALETTE.muted, 'center', 'bold');
-    roundRectPath(barX, 32, barWidth, 14, 7);
-    context.fillStyle = '#1a2038';
-    context.fill();
+    ctx.strokeStyle = PALETTE.muted;
+    ctx.lineWidth = 2;
+    ellipse(ex, ey, 11, 7);
+    ctx.stroke();
+    ctx.fillStyle = state.alarm > 0.65 ? PALETTE.danger : PALETTE.muted;
+    ctx.beginPath();
+    ctx.arc(ex, ey, 3.4, 0, TAU);
+    ctx.fill();
+    label('ALARM', FIELD.width / 2, 13, 14, PALETTE.muted, 'center', true);
+    rounded(barX, 32, barW, 14, 7);
+    ctx.fillStyle = '#1a2038';
+    ctx.fill();
     if (state.alarm > 0) {
-      const fillGrad = context.createLinearGradient(barX, 0, barX + barWidth, 0);
-      fillGrad.addColorStop(0, '#f2c94c');
-      fillGrad.addColorStop(1, '#e5534b');
-      context.save();
-      roundRectPath(barX, 32, barWidth, 14, 7);
-      context.clip();
-      context.fillStyle = fillGrad;
-      context.fillRect(barX, 32, barWidth * state.alarm, 14);
-      context.restore();
+      const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+      grad.addColorStop(0, GOLD);
+      grad.addColorStop(1, PALETTE.danger);
+      ctx.save();
+      rounded(barX, 32, barW, 14, 7);
+      ctx.clip();
+      ctx.fillStyle = grad;
+      ctx.fillRect(barX, 32, barW * state.alarm, 14);
+      ctx.restore();
     }
-    roundRectPath(barX, 32, barWidth, 14, 7);
-    context.strokeStyle = ART.hudEdge;
-    context.lineWidth = 1.5;
-    context.stroke();
-    // Tools, bottom left: counts and their score cost.
-    hudBack(14, FIELD.height - 56, 392, 44);
-    context.textBaseline = 'middle';
-    text(`Q Decoy coin ×${state.decoysLeft}  (−${TOOLS.decoyCost})`, 26, FIELD.height - 34, 17, state.decoysLeft > 0 ? PALETTE.text : PALETTE.muted, 'left');
-    text(`E Smoke ×${state.smokesLeft}  (−${TOOLS.smokeCost})`, 230, FIELD.height - 34, 17, state.smokesLeft > 0 ? PALETTE.text : PALETTE.muted, 'left');
+    rounded(barX, 32, barW, 14, 7);
+    ctx.strokeStyle = HUD.edge;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // remaining tools, bottom left
+    hudPanel(14, FIELD.height - 56, 392, 44);
+    ctx.textBaseline = 'middle';
+    label(`Q Decoy coin ×${state.decoysLeft}  (−${TOOLS.decoyCost})`, 26, FIELD.height - 34, 17, state.decoysLeft > 0 ? PALETTE.text : PALETTE.muted);
+    label(`E Smoke ×${state.smokesLeft}  (−${TOOLS.smokeCost})`, 230, FIELD.height - 34, 17, state.smokesLeft > 0 ? PALETTE.text : PALETTE.muted);
+
     if (state.banner > 0) {
-      context.textBaseline = 'middle';
-      outlineText(`Room ${state.levelIndex + 1} — ${state.levelName}`, FIELD.width / 2, FIELD.height / 2 - 120, 42, '#ffffff', 'center', 'bold');
-      outlineText('Pocket the gem, reach the EXIT unseen', FIELD.width / 2, FIELD.height / 2 - 78, 22, '#ffe9a8', 'center');
+      ctx.textBaseline = 'middle';
+      bigLabel(`Room ${state.levelIndex + 1} — ${state.levelName}`, FIELD.width / 2, FIELD.height / 2 - 120, 42, '#ffffff');
+      bigLabel('Pocket the gem, reach the EXIT unseen', FIELD.width / 2, FIELD.height / 2 - 78, 22, '#ffe9a8');
     }
   }
 
-  function drawPanel(title, lines, prompt) {
-    const height = PANEL.top + lines.length * PANEL.line + PANEL.bottom;
-    const x = (FIELD.width - PANEL.width) / 2;
+  function paintPanel(title, lines, prompt) {
+    const lineH = 34;
+    const height = 150 + lines.length * lineH + 78;
+    const width = 700;
+    const x = (FIELD.width - width) / 2;
     const y = (FIELD.height - height) / 2;
-    context.fillStyle = 'rgba(10, 12, 30, 0.45)';
-    context.fillRect(0, 0, FIELD.width, FIELD.height);
-    roundRectPath(x + 6, y + 10, PANEL.width, height, 22);
-    context.fillStyle = 'rgba(8, 10, 26, 0.5)';
-    context.fill();
-    const grad = context.createLinearGradient(x, y, x, y + height);
-    grad.addColorStop(0, ART.panelTop);
-    grad.addColorStop(1, ART.panelBottom);
-    roundRectPath(x, y, PANEL.width, height, 22);
-    context.fillStyle = grad;
-    context.fill();
-    context.strokeStyle = ART.panelEdge;
-    context.lineWidth = 3;
-    context.stroke();
-    roundRectPath(x + 8, y + 8, PANEL.width - 16, height - 16, 16);
-    context.strokeStyle = 'rgba(220, 232, 255, 0.35)';
-    context.lineWidth = 1.5;
-    context.stroke();
-    context.fillStyle = '#ffe9a8';
-    for (const [sx, sy] of [[x + 26, y + 26], [x + PANEL.width - 26, y + 26], [x + 26, y + height - 26], [x + PANEL.width - 26, y + height - 26]]) {
-      context.beginPath();
-      context.moveTo(sx, sy - 8);
-      context.lineTo(sx + 2.4, sy);
-      context.lineTo(sx, sy + 8);
-      context.lineTo(sx - 2.4, sy);
-      context.closePath();
-      context.fill();
+    ctx.fillStyle = 'rgba(10, 12, 30, 0.45)';
+    ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+    rounded(x + 6, y + 10, width, height, 22);
+    ctx.fillStyle = 'rgba(8, 10, 26, 0.5)';
+    ctx.fill();
+    const grad = ctx.createLinearGradient(x, y, x, y + height);
+    grad.addColorStop(0, PANEL.top);
+    grad.addColorStop(1, PANEL.low);
+    rounded(x, y, width, height, 22);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = PANEL.edge;
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    rounded(x + 8, y + 8, width - 16, height - 16, 16);
+    ctx.strokeStyle = 'rgba(220, 232, 255, 0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    // corner sparkles
+    ctx.fillStyle = '#ffe9a8';
+    for (const [sx, sy] of [[x + 26, y + 26], [x + width - 26, y + 26], [x + 26, y + height - 26], [x + width - 26, y + height - 26]]) {
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 8);
+      ctx.lineTo(sx + 2.4, sy);
+      ctx.lineTo(sx, sy + 8);
+      ctx.lineTo(sx - 2.4, sy);
+      ctx.closePath();
+      ctx.fill();
     }
-    context.textBaseline = 'alphabetic';
-    outlineText(title, FIELD.width / 2, y + 84, 52, '#ffffff', 'center', 'bold');
-    context.strokeStyle = 'rgba(255, 233, 168, 0.7)';
-    context.lineWidth = 2;
-    context.beginPath();
-    context.moveTo(FIELD.width / 2 - 130, y + 104);
-    context.lineTo(FIELD.width / 2 - 14, y + 104);
-    context.moveTo(FIELD.width / 2 + 14, y + 104);
-    context.lineTo(FIELD.width / 2 + 130, y + 104);
-    context.stroke();
-    context.fillStyle = '#ffe9a8';
-    context.beginPath();
-    context.moveTo(FIELD.width / 2, y + 96);
-    context.lineTo(FIELD.width / 2 + 7, y + 104);
-    context.lineTo(FIELD.width / 2, y + 112);
-    context.lineTo(FIELD.width / 2 - 7, y + 104);
-    context.closePath();
-    context.fill();
-    for (let index = 0; index < lines.length; index += 1) {
-      text(lines[index], FIELD.width / 2, y + PANEL.top + index * PANEL.line, 21, '#dbe4ff', 'center');
-    }
-    setFont(23, 'bold');
-    const pw = context.measureText(prompt).width + 44;
-    roundRectPath(FIELD.width / 2 - pw / 2, y + height - 62, pw, 38, 19);
-    context.fillStyle = 'rgba(242, 201, 76, 0.16)';
-    context.fill();
-    context.strokeStyle = 'rgba(242, 201, 76, 0.65)';
-    context.lineWidth = 1.5;
-    context.stroke();
-    text(prompt, FIELD.width / 2, y + height - 34, 23, ART.gold, 'center', 'bold');
+    ctx.textBaseline = 'alphabetic';
+    bigLabel(title, FIELD.width / 2, y + 84, 52, '#ffffff');
+    // divider with a diamond in the middle
+    ctx.strokeStyle = 'rgba(255, 233, 168, 0.7)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(FIELD.width / 2 - 130, y + 104);
+    ctx.lineTo(FIELD.width / 2 - 14, y + 104);
+    ctx.moveTo(FIELD.width / 2 + 14, y + 104);
+    ctx.lineTo(FIELD.width / 2 + 130, y + 104);
+    ctx.stroke();
+    ctx.fillStyle = '#ffe9a8';
+    ctx.beginPath();
+    ctx.moveTo(FIELD.width / 2, y + 96);
+    ctx.lineTo(FIELD.width / 2 + 7, y + 104);
+    ctx.lineTo(FIELD.width / 2, y + 112);
+    ctx.lineTo(FIELD.width / 2 - 7, y + 104);
+    ctx.closePath();
+    ctx.fill();
+    lines.forEach((line, i) => label(line, FIELD.width / 2, y + 150 + i * lineH, 21, '#dbe4ff', 'center'));
+    // prompt pill
+    font(23, true);
+    const pw = ctx.measureText(prompt).width + 44;
+    rounded(FIELD.width / 2 - pw / 2, y + height - 62, pw, 38, 19);
+    ctx.fillStyle = 'rgba(242, 201, 76, 0.16)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(242, 201, 76, 0.65)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    label(prompt, FIELD.width / 2, y + height - 34, 23, GOLD, 'center', true);
   }
 
-  const TITLE_LINES = [
-    'Sneak past the guard slimes and cameras, pocket the gem, escape.',
-    'Stay out of the light beams — cases and walls block sight.',
-    'Move: WASD / arrows / mouse. Sneak: Shift. Q: decoy. E: smoke.',
-    '',
-  ];
-  const PAUSED_LINES = ['The guards will wait for you.'];
-  const CAUGHT_LINES = ['', ''];
-  const WIN_LINES = ['', '', ''];
-
-  /** Paint one frame: the field, then the HUD or a panel for the screen the game is on. */
   function draw(state, screen, best) {
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.fillStyle = PALETTE.backdrop;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.setTransform(view.scale, 0, 0, view.scale, view.x, view.y);
-    drawField(state);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = PALETTE.backdrop;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox, view.oy);
+    paintField(state);
     if (screen === SCREEN_TITLE) {
-      TITLE_LINES[3] = bestLabel(best);
-      drawPanel('Slime Heist', TITLE_LINES, 'Press Space or click to start');
+      paintPanel('Slime Heist', [
+        'Sneak past the guard slimes and cameras, pocket the gem, escape.',
+        'Stay out of the light beams — cases and walls block sight.',
+        'Move: WASD / arrows / mouse. Sneak: Shift. Q: decoy. E: smoke.',
+        `Best ${best}`,
+      ], 'Press Space or click to start');
       return;
     }
-    drawHud(state);
-    if (screen === SCREEN_PAUSED) drawPanel('Paused', PAUSED_LINES, 'Press P to resume');
-    else if (screen === SCREEN_CAUGHT) {
-      CAUGHT_LINES[0] = 'The alarm tripped. The gem stays in its case… this time.';
-      CAUGHT_LINES[1] = finalLabel(state.score - state.toolCost);
-      drawPanel('Caught!', CAUGHT_LINES, 'Press Space or click to try again');
+    paintHud(state);
+    if (screen === SCREEN_PAUSED) {
+      paintPanel('Paused', ['The guards will wait for you.'], 'Press P to resume');
+    } else if (screen === SCREEN_CAUGHT) {
+      paintPanel('Caught!', [
+        'The alarm tripped. The gem stays in its case… this time.',
+        `Score ${state.score - state.toolCost}`,
+      ], 'Press Space or click to try again');
     } else if (screen === SCREEN_WIN) {
-      WIN_LINES[0] = 'Every gem pocketed, every guard none the wiser.';
-      WIN_LINES[1] = `${finalLabel(state.score - state.toolCost)}   Time ${formatTime(state.totalTime)}`;
-      WIN_LINES[2] = bestLabel(best);
-      drawPanel('Clean Getaway!', WIN_LINES, 'Press Space or click to play again');
+      paintPanel('Clean Getaway!', [
+        'Every gem pocketed, every guard none the wiser.',
+        `Score ${state.score - state.toolCost}   Time ${clock(state.totalTime)}`,
+        `Best ${best}`,
+      ], 'Press Space or click to play again');
     }
   }
 
-  resize();
-  window.addEventListener('resize', resize);
+  fit();
+  window.addEventListener('resize', fit);
   return { draw, toLogical };
 }
